@@ -4,6 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from my_utils.cache_utils import configure_model_cache
+
+configure_model_cache()
+
 
 def _resolve_dinov2_model_name(model_name: Optional[str]) -> str:
     name = "" if model_name is None else str(model_name).strip()

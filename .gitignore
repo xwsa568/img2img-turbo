@@ -163,6 +163,7 @@ cython_debug/
 single_step_translation
 gradio
 checkpoints/
+ckpts/
 img2img-turbo-sketch
 outputs/
 outputs/bird.png

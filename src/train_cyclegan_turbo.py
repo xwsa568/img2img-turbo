@@ -1,6 +1,10 @@
 import os
 import gc
 import copy
+from my_utils.cache_utils import configure_model_cache, get_hf_cache_dir
+
+configure_model_cache()
+
 import lpips
 import torch
 import wandb
@@ -30,9 +34,21 @@ def main(args):
     if accelerator.is_main_process:
         os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained("stabilityai/sd-turbo", subfolder="tokenizer", revision=args.revision, use_fast=False,)
+    configure_model_cache(args.cache_dir)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        "stabilityai/sd-turbo",
+        subfolder="tokenizer",
+        revision=args.revision,
+        use_fast=False,
+        cache_dir=get_hf_cache_dir(),
+    )
     noise_scheduler_1step = make_1step_sched()
-    text_encoder = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda()
+    text_encoder = CLIPTextModel.from_pretrained(
+        "stabilityai/sd-turbo",
+        subfolder="text_encoder",
+        cache_dir=get_hf_cache_dir(),
+    ).cuda()
 
     unet, l_modules_unet_encoder, l_modules_unet_decoder, l_modules_unet_others = initialize_unet(args.lora_rank_unet, return_lora_module_names=True)
     vae_a2b, vae_lora_target_modules = initialize_vae(args.lora_rank_vae, return_lora_module_names=True)

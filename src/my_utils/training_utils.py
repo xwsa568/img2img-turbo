@@ -142,6 +142,7 @@ def parse_args_unpaired_training():
 
     # args for the model
     parser.add_argument("--pretrained_model_name_or_path", default="stabilityai/sd-turbo")
+    parser.add_argument("--cache_dir", default=None, type=str, help="Directory for downloaded HF/torch/CLIP model caches. Defaults to ./ckpts.")
     parser.add_argument("--revision", default=None, type=str)
     parser.add_argument("--variant", default=None, type=str)
     parser.add_argument("--lora_rank_unet", default=128, type=int)

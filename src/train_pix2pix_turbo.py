@@ -1,5 +1,9 @@
 import os
 import gc
+from my_utils.cache_utils import configure_model_cache, get_clip_cache_dir
+
+configure_model_cache()
+
 import lpips
 import clip
 import numpy as np
@@ -25,6 +29,8 @@ from my_utils.training_utils import parse_args_paired_training, PairedDataset
 
 
 def main(args):
+    configure_model_cache(args.cache_dir)
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -73,7 +79,7 @@ def main(args):
     net_disc.train()
 
     net_lpips = lpips.LPIPS(net='vgg').cuda()
-    net_clip, _ = clip.load("ViT-B/32", device="cuda")
+    net_clip, _ = clip.load("ViT-B/32", device="cuda", download_root=get_clip_cache_dir())
     net_clip.requires_grad_(False)
     net_clip.eval()
 

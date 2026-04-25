@@ -1,11 +1,19 @@
 import os
 import requests
 from tqdm import tqdm
+from my_utils.cache_utils import configure_model_cache, get_hf_cache_dir
+
+configure_model_cache()
+
 from diffusers import DDPMScheduler
 
 
 def make_1step_sched():
-    noise_scheduler_1step = DDPMScheduler.from_pretrained("stabilityai/sd-turbo", subfolder="scheduler")
+    noise_scheduler_1step = DDPMScheduler.from_pretrained(
+        "stabilityai/sd-turbo",
+        subfolder="scheduler",
+        cache_dir=get_hf_cache_dir(),
+    )
     noise_scheduler_1step.set_timesteps(1, device="cuda")
     noise_scheduler_1step.alphas_cumprod = noise_scheduler_1step.alphas_cumprod.cuda()
     return noise_scheduler_1step

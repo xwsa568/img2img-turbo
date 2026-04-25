@@ -2,6 +2,10 @@ import torch
 import torchvision
 import torch.nn.functional as F
 
+from my_utils.cache_utils import configure_model_cache
+
+configure_model_cache()
+
 
 def attn_cosine_sim(x, eps=1e-08):
     x = x[0]  # TEMP: getting rid of redundant dimension, TBF
