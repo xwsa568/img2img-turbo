@@ -156,6 +156,7 @@ def main(args):
     dino_relation_loss = SecondOrderDinoGramLoss(
         model_name=args.dino_rel_model_name,
         resize=args.dino_rel_resize,
+        resolutions=args.dino_rel_resolutions,
         token_subsample=args.dino_rel_tokens,
         tau=args.dino_rel_tau,
         eps=args.dino_rel_eps,
@@ -164,6 +165,9 @@ def main(args):
     ).to(accelerator.device)
     dino_relation_loss.eval()
     dino_relation_loss.requires_grad_(False)
+    if accelerator.is_main_process:
+        dino_rel_res_text = ",".join(str(v) for v in dino_relation_loss.resolutions) if len(dino_relation_loss.resolutions) > 0 else "native"
+        print(f"[DINO-REL] resolutions={dino_rel_res_text}", flush=True)
 
     fixed_a2b_tokens = tokenizer(fixed_caption_tgt, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids[0]
     fixed_a2b_emb_base = text_encoder(fixed_a2b_tokens.cuda().unsqueeze(0))[0].detach()
@@ -205,12 +209,12 @@ def main(args):
                 """
                 DINO Relation Consistency Objective
                 """
-                # A -> fake B: match target-domain B relation statistics.
+                # A -> fake B: preserve source-domain A relation statistics.
                 rel_fake_b = CycleGAN_Turbo.forward_with_networks(img_a, "a2b", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_a2b_emb)
-                loss_dino_rel_b = dino_relation_loss(rel_fake_b, img_b) * args.lambda_cycle
-                # B -> fake A: match target-domain A relation statistics.
+                loss_dino_rel_b = dino_relation_loss(rel_fake_b, img_a) * args.lambda_cycle
+                # B -> fake A: preserve source-domain B relation statistics.
                 rel_fake_a = CycleGAN_Turbo.forward_with_networks(img_b, "b2a", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_b2a_emb)
-                loss_dino_rel_a = dino_relation_loss(rel_fake_a, img_a) * args.lambda_cycle
+                loss_dino_rel_a = dino_relation_loss(rel_fake_a, img_b) * args.lambda_cycle
                 accelerator.backward(loss_dino_rel_a + loss_dino_rel_b, retain_graph=False)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(params_gen, args.max_grad_norm)

@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,43 @@ def _compute_dinov2_resize_hw(
     target_h = _scaled_dinov2_size(h, base_patch_size=base_patch_size, dino_patch_size=dino_patch_size)
     target_w = _scaled_dinov2_size(w, base_patch_size=base_patch_size, dino_patch_size=dino_patch_size)
     return target_h, target_w
+
+
+def _parse_resolution_list(
+    values: Optional[Union[str, int, List[int], Tuple[int, ...]]],
+    default: Optional[List[int]] = None,
+) -> List[int]:
+    if values is None:
+        src = [] if default is None else list(default)
+    elif isinstance(values, str):
+        token = values.strip().lower()
+        if token in {"", "none", "off"}:
+            src = []
+        elif token == "default":
+            src = [] if default is None else list(default)
+        elif token in {"primary", "single"}:
+            src = [] if default is None or len(default) == 0 else [default[0]]
+        else:
+            src = [v.strip() for v in values.split(",")]
+    elif isinstance(values, int):
+        src = [values]
+    else:
+        src = list(values)
+
+    out: List[int] = []
+    for item in src:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            item = item.strip()
+            if len(item) == 0:
+                continue
+        res = int(item)
+        if res <= 0:
+            raise ValueError(f"Resolution must be positive, got {res}")
+        if res not in out:
+            out.append(res)
+    return out
 
 
 def _sample_shared_patch_idx(
@@ -109,6 +146,7 @@ class SecondOrderDinoGramLoss(nn.Module):
         self,
         model_name: str = "dinov2_vitb14",
         resize: int = 256,
+        resolutions: Optional[Union[str, int, List[int], Tuple[int, ...]]] = None,
         token_subsample: int = 0,
         tau: float = 0.1,
         eps: float = 1e-6,
@@ -119,6 +157,8 @@ class SecondOrderDinoGramLoss(nn.Module):
         super().__init__()
         self.model_name = _resolve_dinov2_model_name(model_name)
         self.resize = int(resize)
+        default_resolutions = [self.resize] if self.resize > 0 else []
+        self.resolutions = _parse_resolution_list(resolutions, default=default_resolutions)
         self.token_subsample = int(token_subsample)
         self.tau = float(tau)
         self.eps = float(eps)
@@ -148,13 +188,13 @@ class SecondOrderDinoGramLoss(nn.Module):
         super().train(False)
         return self
 
-    def _preprocess(self, x: torch.Tensor) -> torch.Tensor:
+    def _preprocess(self, x: torch.Tensor, resize_to: Optional[int]) -> torch.Tensor:
         x01 = (x.float().clamp(-1, 1) + 1.0) * 0.5
 
-        if self.resize > 0 and (x01.shape[-2] != self.resize or x01.shape[-1] != self.resize):
+        if resize_to is not None and resize_to > 0 and (x01.shape[-2] != resize_to or x01.shape[-1] != resize_to):
             x01 = F.interpolate(
                 x01,
-                size=(self.resize, self.resize),
+                size=(int(resize_to), int(resize_to)),
                 mode="bicubic",
                 align_corners=False,
                 antialias=True,
@@ -177,8 +217,8 @@ class SecondOrderDinoGramLoss(nn.Module):
 
         return (x01 - self.mean) / self.std
 
-    def forward_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.net.forward_features(self._preprocess(x))
+    def forward_tokens(self, x: torch.Tensor, resize_to: Optional[int] = None) -> torch.Tensor:
+        out = self.net.forward_features(self._preprocess(x, resize_to=resize_to))
         if not isinstance(out, dict):
             raise RuntimeError(f"DINOv2 forward_features must return a dict, got {type(out)}")
         patches = out.get("x_norm_patchtokens", None)
@@ -186,11 +226,11 @@ class SecondOrderDinoGramLoss(nn.Module):
             raise RuntimeError("DINOv2 forward_features output is missing 'x_norm_patchtokens'.")
         return patches
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        pred_patches = self.forward_tokens(pred)
-        with torch.no_grad():
-            target_patches = self.forward_tokens(target)
-
+    def _pair_loss_from_patches(
+        self,
+        pred_patches: torch.Tensor,
+        target_patches: torch.Tensor,
+    ) -> torch.Tensor:
         idx = _sample_shared_patch_idx([pred_patches, target_patches], self.token_subsample)
         pred_gram, _ = _self_sim_matrix_from_patches(
             pred_patches,
@@ -215,3 +255,16 @@ class SecondOrderDinoGramLoss(nn.Module):
             tau=self.tau,
             eps=self.eps,
         )
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        resolutions: List[Optional[int]] = list(self.resolutions)
+        if len(resolutions) == 0:
+            resolutions = [None]
+
+        total = pred.new_tensor(0.0, dtype=torch.float32)
+        for res in resolutions:
+            pred_patches = self.forward_tokens(pred, resize_to=res)
+            with torch.no_grad():
+                target_patches = self.forward_tokens(target, resize_to=res)
+            total = total + self._pair_loss_from_patches(pred_patches, target_patches)
+        return total / float(len(resolutions))
