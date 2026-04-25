@@ -153,17 +153,17 @@ def main(args):
     net_lpips = lpips.LPIPS(net='vgg')
     net_lpips.cuda()
     net_lpips.requires_grad_(False)
-    cycle_gram_loss = SecondOrderDinoGramLoss(
-        model_name=args.cycle_gram_model_name,
-        resize=args.cycle_gram_resize,
-        token_subsample=args.cycle_gram_tokens,
-        tau=args.cycle_gram_tau,
-        eps=args.cycle_gram_eps,
-        remove_diag=args.cycle_gram_remove_diag,
-        l2norm=not args.cycle_gram_no_l2norm,
+    dino_relation_loss = SecondOrderDinoGramLoss(
+        model_name=args.dino_rel_model_name,
+        resize=args.dino_rel_resize,
+        token_subsample=args.dino_rel_tokens,
+        tau=args.dino_rel_tau,
+        eps=args.dino_rel_eps,
+        remove_diag=args.dino_rel_remove_diag,
+        l2norm=not args.dino_rel_no_l2norm,
     ).to(accelerator.device)
-    cycle_gram_loss.eval()
-    cycle_gram_loss.requires_grad_(False)
+    dino_relation_loss.eval()
+    dino_relation_loss.requires_grad_(False)
 
     fixed_a2b_tokens = tokenizer(fixed_caption_tgt, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids[0]
     fixed_a2b_emb_base = text_encoder(fixed_a2b_tokens.cuda().unsqueeze(0))[0].detach()
@@ -203,17 +203,15 @@ def main(args):
                 timesteps = torch.tensor([noise_scheduler_1step.config.num_train_timesteps - 1] * bsz, device=img_a.device).long()
 
                 """
-                Cycle Objective
+                DINO Relation Consistency Objective
                 """
-                # A -> fake B -> rec A
-                cyc_fake_b = CycleGAN_Turbo.forward_with_networks(img_a, "a2b", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_a2b_emb)
-                cyc_rec_a = CycleGAN_Turbo.forward_with_networks(cyc_fake_b, "b2a", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_b2a_emb)
-                loss_cycle_a = cycle_gram_loss(cyc_rec_a, img_a) * args.lambda_cycle
-                # B -> fake A -> rec B
-                cyc_fake_a = CycleGAN_Turbo.forward_with_networks(img_b, "b2a", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_b2a_emb)
-                cyc_rec_b = CycleGAN_Turbo.forward_with_networks(cyc_fake_a, "a2b", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_a2b_emb)
-                loss_cycle_b = cycle_gram_loss(cyc_rec_b, img_b) * args.lambda_cycle
-                accelerator.backward(loss_cycle_a + loss_cycle_b, retain_graph=False)
+                # A -> fake B: match target-domain B relation statistics.
+                rel_fake_b = CycleGAN_Turbo.forward_with_networks(img_a, "a2b", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_a2b_emb)
+                loss_dino_rel_b = dino_relation_loss(rel_fake_b, img_b) * args.lambda_cycle
+                # B -> fake A: match target-domain A relation statistics.
+                rel_fake_a = CycleGAN_Turbo.forward_with_networks(img_b, "b2a", vae_enc, unet, vae_dec, noise_scheduler_1step, timesteps, fixed_b2a_emb)
+                loss_dino_rel_a = dino_relation_loss(rel_fake_a, img_a) * args.lambda_cycle
+                accelerator.backward(loss_dino_rel_a + loss_dino_rel_b, retain_graph=False)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(params_gen, args.max_grad_norm)
     
@@ -282,8 +280,8 @@ def main(args):
                 optimizer_disc.zero_grad()
 
             logs = {}
-            logs["cycle_a"] = loss_cycle_a.detach().item()
-            logs["cycle_b"] = loss_cycle_b.detach().item()
+            logs["dino_rel_a"] = loss_dino_rel_a.detach().item()
+            logs["dino_rel_b"] = loss_dino_rel_b.detach().item()
             logs["gan_a"] = loss_gan_a.detach().item()
             logs["gan_b"] = loss_gan_b.detach().item()
             logs["disc_a"] = loss_D_A_fake.detach().item() + loss_D_A_real.detach().item()
@@ -308,8 +306,6 @@ def main(args):
                                     "train/real_a": [wandb.Image(viz_img_a[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)],
                                     "train/real_b": [wandb.Image(viz_img_b[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)],
                                 }
-                                log_dict["train/rec_a"] = [wandb.Image(cyc_rec_a[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)]
-                                log_dict["train/rec_b"] = [wandb.Image(cyc_rec_b[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)]
                                 log_dict["train/fake_b"] = [wandb.Image(fake_b[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)]
                                 log_dict["train/fake_a"] = [wandb.Image(fake_a[idx].float().detach().cpu(), caption=f"idx={idx}") for idx in range(bsz)]
                                 tracker.log(log_dict)
